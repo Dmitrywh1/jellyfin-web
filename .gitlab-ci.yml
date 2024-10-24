@@ -1,0 +1,76 @@
+stages:
+  - install dependencies
+  - tests
+  - build
+  - push
+
+default:
+  tags:
+    - docker
+
+variables:
+  IMAGE: "${CI_REGISTRY}/${CI_REGISTRY_ID}/${CI_PROJECT_NAME}"
+
+.node_image: &node_image
+  image: node:20-alpine
+
+install dependencies:
+  stage: install dependencies
+  <<: *node_image
+  script:
+    - npm install
+  cache:
+    paths:
+      - node_modules/
+  artifacts:
+    paths:
+      - node_modules/
+
+test:
+  stage: tests
+  <<: *node_image
+  script:
+    - npm test
+  dependencies:
+    - install dependencies
+  needs:
+    - install dependencies
+
+.prepare_docker:
+  services:
+    - docker:dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_TLS_CERTDIR: ''
+  before_script:
+    - echo -n "$CI_REGISTRY_PASSWORD" | docker login --username $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
+
+build:
+  stage: build
+  extends: .prepare_docker
+  script:
+    - docker build -t $IMAGE .
+    - docker images
+  after_script:
+    - docker save $IMAGE -o ./image.tar
+  artifacts:
+    paths:
+      - image.tar
+    expire_in: 10 minutes
+  dependencies:
+    - install dependencies
+  needs:
+    - install dependencies
+    - test
+
+push:
+  stage: push
+  extends: .prepare_docker
+  script:
+    - docker load -i ./image.tar
+    - docker push $IMAGE
+  needs:
+    - job: build
+      artifacts: true
+  dependencies:
+    - build
