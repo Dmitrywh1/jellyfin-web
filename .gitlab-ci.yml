@@ -23,7 +23,6 @@ variables:
         ports:
           - "8080:8080"
 
-
 .node_image: &node_image
   image: node:20-alpine
 
