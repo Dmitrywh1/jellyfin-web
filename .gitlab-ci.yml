@@ -2,7 +2,7 @@ stages:
   - install dependencies
   - tests
   - build
-  - push
+  - deploy
 
 default:
   tags:
@@ -10,6 +10,19 @@ default:
 
 variables:
   IMAGE: "${CI_REGISTRY}/${CI_REGISTRY_ID}/${CI_PROJECT_NAME}"
+  DOCKER_CONTAINER: $CI_PROJECT_NAME-docker
+  COMPOSE_CONTAINER: $CI_PROJECT_NAME-compose
+  TAG: $CI_COMMIT_SHA
+  ENVIRONMENT: dev
+  DOCKER_COMPOSE: |
+    version: '3'
+    services:
+      $CI_PROJECT_NAME:
+        image: $IMAGE:$TAG
+        container_name: $COMPOSE_CONTAINER
+        ports:
+          - "8080:8080"
+
 
 .node_image: &node_image
   image: node:20-alpine
@@ -36,41 +49,87 @@ test:
   needs:
     - install dependencies
 
-.prepare_docker:
-  services:
-    - docker:dind
-  variables:
-    DOCKER_HOST: tcp://docker:2375/
-    DOCKER_TLS_CERTDIR: ''
-  before_script:
-    - echo -n "$CI_REGISTRY_PASSWORD" | docker login --username $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
-
 build:
   stage: build
-  extends: .prepare_docker
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: ['']
+  before_script:
+      - echo "{\"auths\":{\"$CI_REGISTRY\":{\"username\":\"$CI_REGISTRY_USER\",\"password\":\"$CI_REGISTRY_PASSWORD\"}}}" > /kaniko/.docker/config.json
   script:
-    - docker build -t $IMAGE .
-    - docker images
-  after_script:
-    - docker save $IMAGE -o ./image.tar
-  artifacts:
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}"
+      --dockerfile "./Dockerfile"
+      --destination "${IMAGE}:latest"
+      --cache=true
+      --no-push-cache
+      --cache-dir=/cache
+  cache:
     paths:
-      - image.tar
-    expire_in: 10 minutes
+      - /cache
   dependencies:
     - install dependencies
   needs:
     - install dependencies
     - test
 
-push:
-  stage: push
-  extends: .prepare_docker
+.prepare_docker_work:
+  before_script:
+    - mkdir ~/.ssh
+    - printf "%sn" "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-keyscan -H $REMOTE_HOST_DEV >> ~/.ssh/known_hosts
+    - |
+      cat <<EOF > ~/.ssh/config
+      Host dev
+      HostName $REMOTE_HOST_DEV
+      User ubuntu
+      IdentityFile ~/.ssh/id_rsa
+      EOF
+    - docker context create $ENVIRONMENT --docker "host=ssh://ubuntu@dev"
+    - unset DOCKER_HOST
+    - echo -n "$CI_REGISTRY_PASSWORD" | docker login --username $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
+
+.prepare_helm_work:
+  image:
+    name: alpine/helm
+    entrypoint: [""]
   script:
-    - docker load -i ./image.tar
-    - docker push $IMAGE
+    - export KUBECONFIG=$KUBECONFIG
+  tags:
+    - docker
+
+deploy_docker:
+  stage: deploy
+  extends: .prepare_docker_work
+  script:
+    - docker context use dev
+    - docker pull $IMAGE:$TAG
+    - docker stop $DOCKER_CONTAINER || true
+    - docker rm $DOCKER_CONTAINER || true
+    - docker run -d --name $DOCKER_CONTAINER -p 8081:8080 $IMAGE:$TAG
   needs:
-    - job: build
-      artifacts: true
-  dependencies:
+    - build
+
+deploy_docker_compose:
+  stage: deploy
+  extends: .prepare_docker_work
+  script:
+    - echo -e "$DOCKER_COMPOSE" > docker-compose.yml
+    - docker --context $ENVIRONMENT compose pull
+    - docker --context $ENVIRONMENT compose up -d --force-recreate --remove-orphans
+  needs:
+    - build
+
+deploy_helm:
+  stage: deploy
+  extends: .prepare_helm_work
+  script:
+    - helm upgrade $CI_PROJECT_NAME charts/$CI_PROJECT_NAME/
+      --debug
+      --install
+      --atomic
+      --values charts/$CI_PROJECT_NAME/dev-values.yml
+      --namespace $ENVIRONMENT
+  needs:
     - build

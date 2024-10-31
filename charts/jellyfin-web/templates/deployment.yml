@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jellyfinweb
+spec:
+  replicas: {{ .Values.jellyfinweb.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: {{ .Values.jellyfinweb.selector }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.jellyfinweb.selector }}
+    spec:
+      imagePullSecrets:
+      - name: yandex-registry
+      containers:
+      - name: jellyweb
+        image: "{{ .Values.jellyfinweb.image.repository }}:{{ .Values.jellyfinweb.image.tag }}"
+        ports:
+        - containerPort: {{ .Values.jellyfinweb.image.container_port }}

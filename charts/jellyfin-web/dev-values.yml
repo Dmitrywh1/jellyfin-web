@@ -1,0 +1,13 @@
+jellyfinweb:
+  image:
+    repository: cr.yandex/crpb6jem7gml01esa824/jellyfin-web
+    tag: latest
+    container_port: 8080
+  replicas: 1
+  service:
+    name: jellyfinweb
+    targetPort: 8080
+    port: 9001
+  selector: jellyfinweb
+  ingress:
+    host: jellyfinweb-dev.morgotq.com
