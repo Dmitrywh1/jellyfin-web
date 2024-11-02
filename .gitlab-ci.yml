@@ -59,7 +59,7 @@ build:
     - /kaniko/executor
       --context "${CI_PROJECT_DIR}"
       --dockerfile "./Dockerfile"
-      --destination "${IMAGE}:latest"
+      --destination "${IMAGE}:$TAG"
       --cache=true
       --no-push-cache
       --cache-dir=/cache
@@ -80,12 +80,12 @@ build:
     - ssh-keyscan -H $REMOTE_HOST_DEV >> ~/.ssh/known_hosts
     - |
       cat <<EOF > ~/.ssh/config
-      Host dev
+      Host $ENVIRONMENT
       HostName $REMOTE_HOST_DEV
       User ubuntu
       IdentityFile ~/.ssh/id_rsa
       EOF
-    - docker context create $ENVIRONMENT --docker "host=ssh://ubuntu@dev"
+    - docker context create $ENVIRONMENT --docker "host=ssh://ubuntu@$ENVIRONMENT"
     - unset DOCKER_HOST
     - echo -n "$CI_REGISTRY_PASSWORD" | docker login --username $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
 
@@ -128,7 +128,7 @@ deploy_helm:
       --debug
       --install
       --atomic
-      --values charts/$CI_PROJECT_NAME/dev-values.yml
+      --values charts/$CI_PROJECT_NAME/$ENVIRONMENT-values.yml
       --namespace $ENVIRONMENT
   needs:
     - build
