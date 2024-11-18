@@ -6,7 +6,6 @@ stages:
   - deploy
   - dast
 
-
 default:
   image: node:20-alpine
   tags:
@@ -170,7 +169,7 @@ deploy_helm:
   needs:
     - build
 
-dast-job:
+dast_job:
   stage: dast
   image: zaproxy/zap-stable
   script:
