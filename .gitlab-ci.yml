@@ -59,7 +59,8 @@ eslint:
   stage: sast
   extends: .node_modules_cache
   script:
-    - npx eslint . -f json > eslint-report.json | tee eslint-report.json
+    - npx eslint . -f json > eslint-report.json
+    - cat eslint-report.json
   artifacts:
     paths:
       - eslint-report.json
@@ -69,7 +70,8 @@ audit:
   stage: sast
   extends: .node_modules_cache
   script:
-    - npm audit --json > audit-report.json | tee audit-report.json
+    - npm audit --json > audit-report.json
+    - cat audit-report.json
   artifacts:
     paths:
       - audit-report.json
