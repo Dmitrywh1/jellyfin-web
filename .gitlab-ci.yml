@@ -1,10 +1,14 @@
 stages:
-  - install dependencies
+  - init
   - tests
+  - sast
   - build
   - deploy
+  - dast
+
 
 default:
+  image: node:20-alpine
   tags:
     - docker
 
@@ -14,6 +18,8 @@ variables:
   COMPOSE_CONTAINER: $CI_PROJECT_NAME-compose
   TAG: $CI_COMMIT_SHA
   ENVIRONMENT: dev
+  DEPLOY_PORTS_COMPOSE: 8080:80
+  DEPLOY_PORTS_DOCKER: 8081:80
   DOCKER_COMPOSE: |
     version: '3'
     services:
@@ -21,32 +27,64 @@ variables:
         image: $IMAGE:$TAG
         container_name: $COMPOSE_CONTAINER
         ports:
-          - "8080:8080"
+          - $DEPLOY_PORTS_COMPOSE
 
-.node_image: &node_image
-  image: node:20-alpine
+.node_modules_cache:
+  cache:
+    key:
+      files:
+        - package.json
+        - package.json
+    paths:
+      - node_modules
 
-install dependencies:
-  stage: install dependencies
-  <<: *node_image
+install .node_modules:
+  stage: init
+  extends: .node_modules_cache
   script:
     - npm install
-  cache:
-    paths:
-      - node_modules/
+
+lint:
+  stage: tests
+  extends: .node_modules_cache
+  script:
+    - npm run lint
+
+vitest:
+  stage: tests
+  extends: .node_modules_cache
+  script:
+    - npm run test
+
+eslint:
+  stage: sast
+  extends: .node_modules_cache
+  script:
+    - npx eslint . -f json > eslint-report.json | tee eslint-report.json
   artifacts:
     paths:
-      - node_modules/
+      - eslint-report.json
+  allow_failure: true
 
-test:
-  stage: tests
-  <<: *node_image
+audit:
+  stage: sast
+  extends: .node_modules_cache
   script:
-    - npm test
-  dependencies:
-    - install dependencies
-  needs:
-    - install dependencies
+    - npm audit --json > audit-report.json | tee audit-report.json
+  artifacts:
+    paths:
+      - audit-report.json
+  allow_failure: true
+
+pre build:
+  stage: build
+  extends: .node_modules_cache
+  script:
+    - npm run build:production
+  artifacts:
+    paths:
+      - dist/
+      - Dockerfile
 
 build:
   stage: build
@@ -67,12 +105,12 @@ build:
     paths:
       - /cache
   dependencies:
-    - install dependencies
+    - pre build
   needs:
-    - install dependencies
-    - test
+    - pre build
 
 .prepare_docker_work:
+  image: docker:latest
   before_script:
     - mkdir ~/.ssh
     - printf "%sn" "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
@@ -80,12 +118,12 @@ build:
     - ssh-keyscan -H $REMOTE_HOST_DEV >> ~/.ssh/known_hosts
     - |
       cat <<EOF > ~/.ssh/config
-      Host $ENVIRONMENT
+      Host dev
       HostName $REMOTE_HOST_DEV
       User ubuntu
       IdentityFile ~/.ssh/id_rsa
       EOF
-    - docker context create $ENVIRONMENT --docker "host=ssh://ubuntu@$ENVIRONMENT"
+    - docker context create $ENVIRONMENT --docker "host=ssh://ubuntu@dev"
     - unset DOCKER_HOST
     - echo -n "$CI_REGISTRY_PASSWORD" | docker login --username $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
 
@@ -95,8 +133,6 @@ build:
     entrypoint: [""]
   script:
     - export KUBECONFIG=$KUBECONFIG
-  tags:
-    - docker
 
 deploy_docker:
   stage: deploy
@@ -106,7 +142,7 @@ deploy_docker:
     - docker pull $IMAGE:$TAG
     - docker stop $DOCKER_CONTAINER || true
     - docker rm $DOCKER_CONTAINER || true
-    - docker run -d --name $DOCKER_CONTAINER -p 8081:8080 $IMAGE:$TAG
+    - docker run -d --name $DOCKER_CONTAINER -p $DEPLOY_PORTS_DOCKER $IMAGE:$TAG
   needs:
     - build
 
@@ -116,6 +152,7 @@ deploy_docker_compose:
   script:
     - echo -e "$DOCKER_COMPOSE" > docker-compose.yml
     - docker --context $ENVIRONMENT compose pull
+    - echo $TAG
     - docker --context $ENVIRONMENT compose up -d --force-recreate --remove-orphans
   needs:
     - build
@@ -128,7 +165,14 @@ deploy_helm:
       --debug
       --install
       --atomic
-      --values charts/$CI_PROJECT_NAME/$ENVIRONMENT-values.yml
+      --values charts/$CI_PROJECT_NAME/dev-values.yml
       --namespace $ENVIRONMENT
   needs:
     - build
+
+dast-job:
+  stage: dast
+  image: zaproxy/zap-stable
+  script:
+    - zap-baseline.py -t http://$REMOTE_HOST_DEV:8080 -I
+  allow_failure: true
